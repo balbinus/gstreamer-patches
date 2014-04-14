@@ -1,0 +1,216 @@
+--- a/sys/decklink/gstdecklink.cpp
++++ b/sys/decklink/gstdecklink.cpp
+@@ -186,6 +186,49 @@
+   return caps;
+ }
+ 
++static GstStructure *
++gst_decklink_audio_channels_get_structure (int n_ch)
++{
++  return gst_structure_new ("audio/x-raw-int",
++      "endianness", G_TYPE_INT, G_LITTLE_ENDIAN,
++      "signed", G_TYPE_BOOLEAN, TRUE,
++      "width", G_TYPE_INT, 16,
++      "depth", G_TYPE_INT, 16,
++      "channels", G_TYPE_INT, n_ch,
++      "rate", G_TYPE_INT, 48000,
++      NULL);
++}
++
++GstCaps *
++gst_decklink_audio_channels_get_caps (int n_ch)
++{
++  GstCaps *caps;
++
++  caps = gst_caps_new_empty ();
++  gst_caps_append_structure (caps, gst_decklink_audio_channels_get_structure (n_ch));
++
++  return caps;
++}
++
++GstCaps *
++gst_decklink_audio_channels_get_template_caps (void)
++{
++  int i;
++  GstCaps *caps;
++  GstStructure *s;
++
++  caps = gst_caps_new_empty ();
++  // 2, 8, 16: only possibilities according to SDK doc
++  s = gst_decklink_audio_channels_get_structure (2);
++  gst_caps_append_structure (caps, s);
++  s = gst_decklink_audio_channels_get_structure (8);
++  gst_caps_append_structure (caps, s);
++  s = gst_decklink_audio_channels_get_structure (16);
++  gst_caps_append_structure (caps, s);
++
++  return caps;
++}
++
+ static gboolean
+ plugin_init (GstPlugin * plugin)
+ {
+--- a/sys/decklink/gstdecklink.h
++++ b/sys/decklink/gstdecklink.h
+@@ -107,6 +107,9 @@
+ GstCaps * gst_decklink_mode_get_caps (GstDecklinkModeEnum e);
+ GstCaps * gst_decklink_mode_get_template_caps (void);
+ 
++GstCaps * gst_decklink_audio_channels_get_caps (int n_ch);
++GstCaps * gst_decklink_audio_channels_get_template_caps (void);
++
+ #define GST_DECKLINK_MODE_CAPS(w,h,n,d,i) \
+   "video/x-raw-yuv,format=(fourcc)UYVY,width=" #w ",height=" #h \
+   ",framerate=" #n "/" #d ",interlaced=" #i
+--- a/sys/decklink/gstdecklinksrc.cpp
++++ b/sys/decklink/gstdecklinksrc.cpp
+@@ -126,6 +126,7 @@
+   PROP_MODE,
+   PROP_CONNECTION,
+   PROP_AUDIO_INPUT,
++  PROP_AUDIO_CHANNELS,
+   PROP_SUBDEVICE
+ };
+ 
+@@ -135,7 +136,7 @@
+ GST_STATIC_PAD_TEMPLATE ("audiosrc",
+     GST_PAD_SRC,
+     GST_PAD_ALWAYS,
+-    GST_STATIC_CAPS ("audio/x-raw-int,width=16,depth=16,channels=2,rate=48000")
++    GST_STATIC_CAPS ("audio/x-raw-int,width=16,depth=16,channels=8,rate=48000")
+     );
+ 
+ /* the video source pad template is created on the fly */
+@@ -153,15 +154,21 @@
+ gst_decklink_src_base_init (gpointer g_class)
+ {
+   GstElementClass *element_class = GST_ELEMENT_CLASS (g_class);
+-  GstPadTemplate *pad_template;
++  GstPadTemplate *audio_pad_template, *video_pad_template;
+ 
+-  gst_element_class_add_static_pad_template (element_class,
+-      &gst_decklink_src_audio_src_template);
+-  pad_template =
++  //gst_element_class_add_static_pad_template (element_class,
++  //  &gst_decklink_src_audio_src_template);
++  audio_pad_template =
++      gst_pad_template_new ("audiosrc", GST_PAD_SRC, GST_PAD_ALWAYS,
++      gst_decklink_audio_channels_get_template_caps ());
++  gst_element_class_add_pad_template (element_class, audio_pad_template);
++  gst_object_unref (audio_pad_template);
++  
++  video_pad_template =
+       gst_pad_template_new ("videosrc", GST_PAD_SRC, GST_PAD_ALWAYS,
+       gst_decklink_mode_get_template_caps ());
+-  gst_element_class_add_pad_template (element_class, pad_template);
+-  gst_object_unref (pad_template);
++  gst_element_class_add_pad_template (element_class, video_pad_template);
++  gst_object_unref (video_pad_template);
+ 
+   gst_element_class_set_details_simple (element_class, "Decklink source",
+       "Source/Video", "DeckLink Source", "David Schleef <ds@entropywave.com>");
+@@ -209,6 +216,12 @@
+           (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+               G_PARAM_CONSTRUCT)));
+ 
++  g_object_class_install_property (gobject_class, PROP_AUDIO_CHANNELS,
++      g_param_spec_int ("audio-channels", "Audio Channels", "Audio Channels",
++          2, 16, 2,
++          (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
++              G_PARAM_CONSTRUCT)));
++  
+   g_object_class_install_property (gobject_class, PROP_SUBDEVICE,
+       g_param_spec_int ("subdevice", "Subdevice", "Subdevice",
+           0, 3, 0,
+@@ -224,9 +237,12 @@
+   decklinksrc->task = gst_task_create (gst_decklink_src_task, decklinksrc);
+   gst_task_set_lock (decklinksrc->task, &decklinksrc->task_mutex);
+ 
++  //decklinksrc->audiosrcpad =
++  //    gst_pad_new_from_static_template (&gst_decklink_src_audio_src_template,
++  //    "audiosrc");
+   decklinksrc->audiosrcpad =
+-      gst_pad_new_from_static_template (&gst_decklink_src_audio_src_template,
+-      "audiosrc");
++      gst_pad_new_from_template (gst_element_class_get_pad_template
++      (GST_ELEMENT_CLASS (decklinksrc_class), "audiosrc"), "audiosrc");
+   gst_pad_set_getcaps_function (decklinksrc->audiosrcpad,
+       GST_DEBUG_FUNCPTR (gst_decklink_src_audio_src_getcaps));
+   gst_pad_set_setcaps_function (decklinksrc->audiosrcpad,
+@@ -292,6 +308,7 @@
+   decklinksrc->mode = GST_DECKLINK_MODE_NTSC;
+   decklinksrc->connection = GST_DECKLINK_CONNECTION_SDI;
+   decklinksrc->audio_connection = GST_DECKLINK_AUDIO_CONNECTION_AUTO;
++  decklinksrc->audio_channels = 2;
+   decklinksrc->subdevice = 0;
+ 
+   decklinksrc->stop = FALSE;
+@@ -339,6 +356,9 @@
+       decklinksrc->audio_connection =
+           (GstDecklinkAudioConnectionEnum) g_value_get_enum (value);
+       break;
++    case PROP_AUDIO_CHANNELS:
++      decklinksrc->audio_channels = g_value_get_int (value);
++      break;
+     case PROP_SUBDEVICE:
+       decklinksrc->subdevice = g_value_get_int (value);
+       break;
+@@ -367,6 +387,9 @@
+     case PROP_AUDIO_INPUT:
+       g_value_set_enum (value, decklinksrc->audio_connection);
+       break;
++    case PROP_AUDIO_CHANNELS:
++      g_value_set_int (value, decklinksrc->audio_channels);
++      break;
+     case PROP_SUBDEVICE:
+       g_value_set_int (value, decklinksrc->subdevice);
+       break;
+@@ -628,11 +651,11 @@
+   }
+ 
+   sample_depth = bmdAudioSampleType16bitInteger;
+-  channels = 2;
++  channels = decklinksrc->audio_channels;
+   ret = decklinksrc->input->EnableAudioInput (bmdAudioSampleRate48kHz,
+       sample_depth, channels);
+   if (ret != S_OK) {
+-    GST_ERROR ("enable video input failed");
++    GST_ERROR ("enable audio input failed");
+     return FALSE;
+   }
+ 
+@@ -1251,8 +1274,8 @@
+   if (gst_pad_is_linked (decklinksrc->audiosrcpad)) {
+     n_samples = audio_frame->GetSampleFrameCount ();
+     audio_frame->GetBytes (&data);
+-    audio_buffer = gst_buffer_new_and_alloc (n_samples * 2 * 2);
+-    memcpy (GST_BUFFER_DATA (audio_buffer), data, n_samples * 2 * 2);
++    audio_buffer = gst_buffer_new_and_alloc (n_samples * decklinksrc->audio_channels * 2);
++    memcpy (GST_BUFFER_DATA (audio_buffer), data, n_samples * decklinksrc->audio_channels * 2);
+ 
+     GST_BUFFER_TIMESTAMP (audio_buffer) =
+         gst_util_uint64_scale_int (decklinksrc->num_audio_samples * GST_SECOND,
+@@ -1264,12 +1287,7 @@
+     decklinksrc->num_audio_samples += n_samples;
+ 
+     if (decklinksrc->audio_caps == NULL) {
+-      decklinksrc->audio_caps = gst_caps_new_simple ("audio/x-raw-int",
+-          "endianness", G_TYPE_INT, G_LITTLE_ENDIAN,
+-          "signed", G_TYPE_BOOLEAN, TRUE,
+-          "depth", G_TYPE_INT, 16,
+-          "width", G_TYPE_INT, 16,
+-          "channels", G_TYPE_INT, 2, "rate", G_TYPE_INT, 48000, NULL);
++      decklinksrc->audio_caps = gst_decklink_audio_channels_get_caps(decklinksrc->audio_channels);
+     }
+     gst_buffer_set_caps (audio_buffer, decklinksrc->audio_caps);
+ 
+--- a/sys/decklink/gstdecklinksrc.h
++++ b/sys/decklink/gstdecklinksrc.h
+@@ -73,6 +73,7 @@
+   GstDecklinkModeEnum mode;
+   GstDecklinkConnectionEnum connection;
+   GstDecklinkAudioConnectionEnum audio_connection;
++  int audio_channels;
+   int subdevice;
+ 
+ #ifdef _MSC_VER

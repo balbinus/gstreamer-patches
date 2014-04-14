@@ -1,0 +1,84 @@
+--- a/sys/decklink/gstdecklinksink.cpp
++++ b/sys/decklink/gstdecklinksink.cpp
+@@ -125,7 +125,8 @@
+ enum
+ {
+   PROP_0,
+-  PROP_MODE
++  PROP_MODE,
++  PROP_SUBDEVICE
+ };
+ 
+ /* pad templates */
+@@ -193,6 +194,11 @@
+           (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+               G_PARAM_CONSTRUCT)));
+ 
++  g_object_class_install_property (gobject_class, PROP_SUBDEVICE,
++      g_param_spec_int ("subdevice", "Subdevice", "Subdevice",
++          0, 3, 0,
++          (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
++              G_PARAM_CONSTRUCT)));
+ }
+ 
+ static void
+@@ -270,6 +276,7 @@
+   decklinksink->audio_mutex = g_mutex_new ();
+ 
+   decklinksink->mode = GST_DECKLINK_MODE_NTSC;
++  decklinksink->subdevice = 0;
+ 
+   decklinksink->callback = new Output;
+   decklinksink->callback->decklinksink = decklinksink;
+@@ -306,6 +313,9 @@
+     case PROP_MODE:
+       decklinksink->mode = (GstDecklinkModeEnum) g_value_get_enum (value);
+       break;
++    case PROP_SUBDEVICE:
++      decklinksink->subdevice = g_value_get_int (value);
++      break;
+     default:
+       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+       break;
+@@ -325,6 +335,9 @@
+     case PROP_MODE:
+       g_value_set_enum (value, decklinksink->mode);
+       break;
++    case PROP_SUBDEVICE:
++      g_value_set_int (value, decklinksink->subdevice);
++      break;
+     default:
+       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+       break;
+@@ -421,6 +434,7 @@
+   HRESULT ret;
+   const GstDecklinkMode *mode;
+   BMDAudioSampleType sample_depth;
++  int i;
+ 
+   iterator = CreateDeckLinkIteratorInstance ();
+   if (iterator == NULL) {
+@@ -433,6 +447,13 @@
+     GST_ERROR ("no card");
+     return FALSE;
+   }
++  for (i = 0; i < decklinksink->subdevice; i++) {
++    ret = iterator->Next (&decklinksink->decklink);
++    if (ret != S_OK) {
++      GST_ERROR ("no card");
++      return FALSE;
++    }
++  }
+ 
+   ret = decklinksink->decklink->QueryInterface (IID_IDeckLinkOutput,
+       (void **) &decklinksink->output);
+--- a/sys/decklink/gstdecklinksink.h
++++ b/sys/decklink/gstdecklinksink.h
+@@ -74,6 +74,7 @@
+ 
+   /* properties */
+   GstDecklinkModeEnum mode;
++  int subdevice;
+ 
+ #ifdef _MSC_VER
+   gboolean comInitialized;
