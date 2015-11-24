@@ -1,0 +1,13 @@
+--- a/ext/rtmp/gstrtmpsink.c
++++ b/ext/rtmp/gstrtmpsink.c
+@@ -255,8 +255,8 @@
+   GST_LOG_OBJECT (sink, "Sending %d bytes to RTMP server",
+       GST_BUFFER_SIZE (buf));
+ 
+-  if (!RTMP_Write (sink->rtmp,
+-          (char *) GST_BUFFER_DATA (buf), GST_BUFFER_SIZE (buf))) {
++  if (RTMP_Write (sink->rtmp,
++          (char *) GST_BUFFER_DATA (buf), GST_BUFFER_SIZE (buf)) <= 0) {
+     GST_ELEMENT_ERROR (sink, RESOURCE, WRITE, (NULL), ("Failed to write data"));
+     if (reffed_buf)
+       gst_buffer_unref (reffed_buf);
